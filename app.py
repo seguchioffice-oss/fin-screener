@@ -1079,28 +1079,33 @@ with tab_smt:
     )
 
     # ── 構成21銘柄（2025年度モメンタムファンド典型構成） ──────────────────────
+    # 出典: SMT米国株式モメンタムファンド 月次レポート 2026年6月
+    # 短期(6M)上位7 / 中期(12M)上位7 / 長期(36M)上位7 = 計21銘柄
     SMT_CONSTITUENTS = [
-        {"ticker": "NVDA",  "name": "Nvidia"},
-        {"ticker": "MSFT",  "name": "Microsoft"},
-        {"ticker": "META",  "name": "Meta Platforms"},
-        {"ticker": "GOOGL", "name": "Alphabet"},
-        {"ticker": "AMZN",  "name": "Amazon"},
-        {"ticker": "AAPL",  "name": "Apple"},
-        {"ticker": "AVGO",  "name": "Broadcom"},
-        {"ticker": "LLY",   "name": "Eli Lilly"},
-        {"ticker": "JPM",   "name": "JPMorgan Chase"},
-        {"ticker": "V",     "name": "Visa"},
-        {"ticker": "MA",    "name": "Mastercard"},
-        {"ticker": "COST",  "name": "Costco"},
-        {"ticker": "UNH",   "name": "UnitedHealth"},
-        {"ticker": "ORCL",  "name": "Oracle"},
-        {"ticker": "CRM",   "name": "Salesforce"},
-        {"ticker": "NOW",   "name": "ServiceNow"},
-        {"ticker": "AMD",   "name": "AMD"},
-        {"ticker": "AMAT",  "name": "Applied Materials"},
-        {"ticker": "LRCX",  "name": "Lam Research"},
-        {"ticker": "GE",    "name": "GE Aerospace"},
-        {"ticker": "CAT",   "name": "Caterpillar"},
+        # ── 短期モメンタム (6ヶ月) ──────────────────────────────────────────
+        {"ticker": "MU",    "name": "マイクロン・テクノロジー",        "period": "6M"},
+        {"ticker": "RKLB",  "name": "ロケット・ラボ",                 "period": "6M"},
+        {"ticker": "WDC",   "name": "ウエスタンデジタル",             "period": "6M"},
+        {"ticker": "STX",   "name": "シーゲイト・テクノロジー",       "period": "6M"},
+        {"ticker": "DELL",  "name": "デル・テクノロジーズ",           "period": "6M"},
+        {"ticker": "CIEN",  "name": "シエナ",                        "period": "6M"},
+        {"ticker": "INTC",  "name": "インテル",                      "period": "6M"},
+        # ── 中期モメンタム (12ヶ月) ─────────────────────────────────────────
+        {"ticker": "BE",    "name": "ブルーム・エナジー",             "period": "12M"},
+        {"ticker": "LITE",  "name": "ルメンタム・ホールディングス",   "period": "12M"},
+        {"ticker": "IREN",  "name": "IREN",                          "period": "12M"},
+        {"ticker": "SATS",  "name": "エコスター",                    "period": "12M"},
+        {"ticker": "ASTS",  "name": "ASTスペースモバイル",           "period": "12M"},
+        {"ticker": "COHR",  "name": "コヒレント",                    "period": "12M"},
+        {"ticker": "TER",   "name": "テラダイン",                    "period": "12M"},
+        # ── 長期モメンタム (36ヶ月) ─────────────────────────────────────────
+        {"ticker": "CVNA",  "name": "カーバナ",                      "period": "36M"},
+        {"ticker": "APP",   "name": "アップラビン",                  "period": "36M"},
+        {"ticker": "CRDO",  "name": "クレド・テクノロジー",          "period": "36M"},
+        {"ticker": "VRT",   "name": "バーティブ・ホールディングス",  "period": "36M"},
+        {"ticker": "FIX",   "name": "コンフォート・システムズUSA",   "period": "36M"},
+        {"ticker": "PLTR",  "name": "バランティア・テクノロジーズ",  "period": "36M"},
+        {"ticker": "HOOD",  "name": "ロビンフッド・マーケッツ",      "period": "36M"},
     ]
 
     @st.cache_data(ttl=300, show_spinner=False)
