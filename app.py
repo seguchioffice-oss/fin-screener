@@ -22,8 +22,42 @@ st.set_page_config(
     page_title="Quality Compounder Screener",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="collapsed",  # モバイルでは初期非表示
+    initial_sidebar_state="collapsed",
 )
+
+# ── パスワード認証 ────────────────────────────────────────────────────────────
+def check_password() -> bool:
+    correct = st.secrets.get("APP_PASSWORD", "")
+    if not correct:
+        return True  # secrets未設定のローカル実行時はスキップ
+
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.markdown("""
+    <div style="max-width:360px;margin:80px auto;padding:32px;
+                background:#fff;border-radius:12px;
+                box-shadow:0 2px 16px rgba(0,0,0,0.10)">
+      <div style="text-align:center;font-size:2rem;margin-bottom:8px">📊</div>
+      <div style="text-align:center;font-weight:700;font-size:1.2rem;
+                  color:#1a1a2e;margin-bottom:24px">Quality Compounder Screener</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col = st.columns([1, 2, 1])[1]
+    with col:
+        pwd = st.text_input("パスワード", type="password", key="pwd_input",
+                            placeholder="パスワードを入力")
+        if st.button("ログイン", use_container_width=True):
+            if pwd == correct:
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("パスワードが違います")
+    return False
+
+if not check_password():
+    st.stop()
 
 # ── custom CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
