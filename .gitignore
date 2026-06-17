@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+.secrets
+# ポートフォリオデータはローカル専用（Cloudにはsession_stateを使う）
+smt_portfolio.json
+.streamlit/secrets.toml
