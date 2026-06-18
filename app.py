@@ -1344,7 +1344,7 @@ with tab_smt:
       </style>
       <div class="top6-grid">{top6_html_cards}</div>
     </div>
-    """, height=620, scrolling=False)
+    """, height=700, scrolling=True)
 
     # ── 6M パフォーマンス 横棒グラフ（全21銘柄） ──────────────────────────────
     st.markdown("---")
