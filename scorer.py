@@ -34,6 +34,20 @@ def fetch_ticker_data(ticker: str) -> dict:
         t = yf.Ticker(ticker)
         info = t.info or {}
 
+        # ── 財務データを先に一括取得（重複HTTPリクエスト防止） ─────────────
+        try:
+            fin = t.financials
+        except Exception:
+            fin = None
+        try:
+            bs = t.balance_sheet
+        except Exception:
+            bs = None
+        try:
+            cf = t.cashflow
+        except Exception:
+            cf = None
+
         # ── price / market data ────────────────────────────────────────
         result["price"] = safe_get(info, "currentPrice", "regularMarketPrice", "previousClose")
         result["market_cap"] = safe_get(info, "marketCap")
@@ -43,15 +57,7 @@ def fetch_ticker_data(ticker: str) -> dict:
         result["name"] = safe_get(info, "longName", "shortName", default=ticker)
 
         # ── EPS growth ────────────────────────────────────────────────
-        # yfinance earnings history: 4 quarterly + forward
         try:
-            ef = t.earnings_forecasts if hasattr(t, "earnings_forecasts") else None
-        except Exception:
-            ef = None
-
-        # Use income statement for multi-year EPS
-        try:
-            fin = t.financials  # annual, index = metric, cols = dates
             if fin is not None and not fin.empty:
                 net_income_row = None
                 for label in ["Net Income", "Net Income From Continuing Operations"]:
@@ -59,15 +65,13 @@ def fetch_ticker_data(ticker: str) -> dict:
                         net_income_row = fin.loc[label]
                         break
                 shares_row = None
-                bs = t.balance_sheet
                 if bs is not None and "Ordinary Shares Number" in bs.index:
                     shares_row = bs.loc["Ordinary Shares Number"]
 
                 if net_income_row is not None and shares_row is not None:
                     eps_series = (net_income_row / shares_row).dropna().sort_index()
                     if len(eps_series) >= 3:
-                        eps_vals = eps_series.values[-4:]  # up to 4 years
-                        # CAGR over available years
+                        eps_vals = eps_series.values[-4:]
                         n = len(eps_vals) - 1
                         if eps_vals[0] > 0 and eps_vals[-1] > 0:
                             result["eps_cagr"] = (eps_vals[-1] / eps_vals[0]) ** (1 / n) - 1
@@ -84,34 +88,25 @@ def fetch_ticker_data(ticker: str) -> dict:
             result["eps_cagr"] = None
             logger.debug(f"{ticker} EPS error: {e}")
 
-        # Fallback: use info fields
         if result["eps_cagr"] is None:
-            eg = safe_get(info, "earningsGrowth")
-            result["eps_cagr"] = eg  # trailing 12m growth
+            result["eps_cagr"] = safe_get(info, "earningsGrowth")
 
         # ── ROIC ─────────────────────────────────────────────────────
         try:
-            fin = t.financials
-            bs = t.balance_sheet
-            cf = t.cashflow
-
             if fin is not None and bs is not None and not fin.empty and not bs.empty:
-                # NOPAT = Operating Income * (1 - effective tax rate)
                 op_inc = None
                 for label in ["Operating Income", "EBIT"]:
                     if label in fin.index:
                         op_inc = fin.loc[label].iloc[0]
                         break
 
-                tax_rate = 0.21  # default US corp tax
+                tax_rate = 0.21
                 pretax = fin.loc["Pretax Income"].iloc[0] if "Pretax Income" in fin.index else None
                 tax_exp = fin.loc["Tax Provision"].iloc[0] if "Tax Provision" in fin.index else None
                 if pretax and tax_exp and pretax != 0:
                     tax_rate = max(0, min(tax_exp / pretax, 0.40))
 
                 nopat = op_inc * (1 - tax_rate) if op_inc else None
-
-                # Invested Capital = Total Assets - Current Liabilities - Cash
                 total_assets = bs.loc["Total Assets"].iloc[0] if "Total Assets" in bs.index else None
                 curr_liab = bs.loc["Current Liabilities"].iloc[0] if "Current Liabilities" in bs.index else None
                 cash = None
@@ -132,15 +127,11 @@ def fetch_ticker_data(ticker: str) -> dict:
             result["roic"] = None
             logger.debug(f"{ticker} ROIC error: {e}")
 
-        # Fallback to ROE/ROA from info
         if result["roic"] is None:
-            roe = safe_get(info, "returnOnEquity")
-            result["roic"] = roe
+            result["roic"] = safe_get(info, "returnOnEquity")
 
         # ── FCF / Net Income ──────────────────────────────────────────
         try:
-            cf = t.cashflow
-            fin = t.financials
             if cf is not None and fin is not None and not cf.empty and not fin.empty:
                 ocf = None
                 for label in ["Operating Cash Flow", "Total Cash From Operating Activities"]:
@@ -153,15 +144,13 @@ def fetch_ticker_data(ticker: str) -> dict:
                         capex = cf.loc[label].iloc[0]
                         break
                 capex = capex or 0
-
                 net_inc = None
                 for label in ["Net Income", "Net Income From Continuing Operations"]:
                     if label in fin.index:
                         net_inc = fin.loc[label].iloc[0]
                         break
-
                 if ocf is not None and net_inc and net_inc != 0:
-                    fcf = ocf + capex  # capex is negative in cashflow statement
+                    fcf = ocf + capex
                     result["fcf_to_netinc"] = fcf / abs(net_inc)
                     result["fcf"] = fcf
                 else:
@@ -177,7 +166,6 @@ def fetch_ticker_data(ticker: str) -> dict:
 
         # ── Dilution: share count change ──────────────────────────────
         try:
-            bs = t.balance_sheet
             if bs is not None and "Ordinary Shares Number" in bs.index and bs.shape[1] >= 2:
                 shares = bs.loc["Ordinary Shares Number"].dropna()
                 if len(shares) >= 2:

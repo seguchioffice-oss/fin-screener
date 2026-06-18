@@ -11,8 +11,10 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import time
+import math
 import os
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from candidates import US_CANDIDATES, JP_CANDIDATES
 from scorer import fetch_ticker_data, score_stock
@@ -216,6 +218,8 @@ with st.sidebar:
 
     st.markdown("---")
     refresh = st.button("🔄 データ再取得", use_container_width=True)
+    if "_stocks_at" in st.session_state:
+        st.caption(f"最終取得: {st.session_state['_stocks_at']}")
 
     st.markdown("---")
     st.markdown("""
@@ -248,7 +252,7 @@ def get_finnhub_quote(ticker: str, api_key: str) -> dict | None:
 
 
 # ── data loading with caching ─────────────────────────────────────────────────
-@st.cache_data(ttl=600, show_spinner=False)  # 10-min cache for fundamentals
+@st.cache_data(ttl=600, show_spinner=False)
 def load_all_stocks(market: str) -> list[dict]:
     candidates = []
     if market in ("全て", "US"):
@@ -256,12 +260,11 @@ def load_all_stocks(market: str) -> list[dict]:
     if market in ("全て", "Japan"):
         candidates += [{"market": "Japan", **c} for c in JP_CANDIDATES]
 
-    results = []
-    progress = st.progress(0, text="データ取得中...")
     total = len(candidates)
+    slot = [0]  # 完了カウンター（スレッド共有）
+    prog = st.progress(0, text=f"データ取得中 (0/{total})...")
 
-    for i, c in enumerate(candidates):
-        progress.progress((i + 1) / total, text=f"取得中: {c['name']} ({c['ticker']})")
+    def _fetch(idx: int, c: dict):
         data = fetch_ticker_data(c["ticker"])
         data["market"] = c["market"]
         if not data.get("name") or data.get("name") == c["ticker"]:
@@ -271,10 +274,22 @@ def load_all_stocks(market: str) -> list[dict]:
         scores = score_stock(data)
         data["scores"] = scores
         data["total_score"] = scores["total"]
-        results.append(data)
-        time.sleep(0.3)  # rate limit
+        return idx, data
 
-    progress.empty()
+    ordered = [None] * total
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futs = {ex.submit(_fetch, i, c): i for i, c in enumerate(candidates)}
+        for fut in as_completed(futs):
+            try:
+                idx, data = fut.result()
+                ordered[idx] = data
+            except Exception:
+                pass
+            slot[0] += 1
+            prog.progress(slot[0] / total, text=f"データ取得中 ({slot[0]}/{total})...")
+
+    prog.empty()
+    results = [r for r in ordered if r is not None]
 
     # エントリー判定を付与してソート
     # entry_rankは後で entry_suggestion() を呼ぶが、循環参照を避けるため
@@ -374,12 +389,17 @@ tab_screen, tab_detail, tab_compare, tab_smt = st.tabs([
     "🏆 スクリーニング結果", "🔍 銘柄詳細", "📈 比較チャート", "🔄 SMTモメンタム"
 ])
 
-# force cache clear on refresh button
-if refresh:
-    st.cache_data.clear()
+# session_state でデータ保持 — 明示的リフレッシュ or 市場切替時のみ再取得
+_market_changed = st.session_state.get("_stocks_market") != market_filter
+if refresh or "all_stocks" not in st.session_state or _market_changed:
+    if refresh:
+        st.cache_data.clear()
+    with st.spinner("データ取得中... (初回のみ時間がかかります)"):
+        st.session_state["all_stocks"] = load_all_stocks(market_filter)
+        st.session_state["_stocks_market"] = market_filter
+        st.session_state["_stocks_at"] = datetime.now().strftime("%m/%d %H:%M")
 
-with st.spinner("ファンダメンタルデータを取得中..."):
-    all_stocks = load_all_stocks(market_filter)
+all_stocks = st.session_state.get("all_stocks", [])
 
 filtered = [s for s in all_stocks if s["total_score"] >= min_score]
 us_top = [s for s in filtered if s.get("market") == "US"][:10]
@@ -445,9 +465,12 @@ with tab_screen:
             }
         )
 
-        # Score breakdown cards — 5-per-row grid
+        # Score breakdown cards — 5-per-row grid (mobile: 2-per-row)
         st.markdown("##### スコア内訳")
-        card_html = '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:4px">'
+        card_html = """<style>
+        .score-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:4px}
+        @media(max-width:520px){.score-grid{grid-template-columns:repeat(2,1fr)}}
+        </style><div class="score-grid">"""
         for s_card in stocks:
             sc_card = s_card["scores"]
             total   = s_card["total_score"]
@@ -493,10 +516,13 @@ with tab_screen:
               {subs}
             </div>"""
         card_html += '</div>'
+        n_cards = len(stocks)
+        # desktop: ceil(n/5)行×220px / mobile: ceil(n/2)行×220px → scrolling で吸収
+        _h = min(max(math.ceil(n_cards / 5) * 230, 230), 500)
         st_html.html(
             f'<div style="font-family:sans-serif">{card_html}</div>',
-            height=320,
-            scrolling=False,
+            height=_h,
+            scrolling=True,
         )
 
     col_us, col_jp = st.columns(2)
@@ -923,7 +949,7 @@ with tab_detail:
     st.subheader("📈 チャート")
     period_sel = st.select_slider("期間", options=["3mo","6mo","1y","2y","5y"], value="1y")
 
-    @st.cache_data(ttl=60)
+    @st.cache_data(ttl=300)
     def get_history(ticker, period):
         return yf.Ticker(ticker).history(period=period)
 
@@ -1010,7 +1036,7 @@ with tab_compare:
     if compare_sel:
         tickers_cmp = [x.split(" ")[0] for x in compare_sel]
 
-        @st.cache_data(ttl=120)
+        @st.cache_data(ttl=300)
         def get_normalized_prices(tickers, period):
             dfs = {}
             for tk in tickers:
@@ -1110,49 +1136,62 @@ with tab_smt:
 
     @st.cache_data(ttl=300, show_spinner=False)
     def load_smt_data() -> list[dict]:
-        results = []
-        prog = st.progress(0, text="SMT構成銘柄を取得中...")
-        for i, c in enumerate(SMT_CONSTITUENTS):
-            prog.progress((i + 1) / len(SMT_CONSTITUENTS),
-                          text=f"取得中: {c['name']} ({c['ticker']})")
+        tickers = [c["ticker"] for c in SMT_CONSTITUENTS]
+        prog = st.progress(0, text="SMT価格データを一括取得中...")
+
+        # 21銘柄を1回のHTTPリクエストでまとめて取得
+        try:
+            raw = yf.download(
+                tickers, period="1y", interval="1d",
+                group_by="ticker", auto_adjust=True,
+                progress=False, threads=True,
+            )
+        except Exception:
+            raw = None
+
+        prog.progress(0.8, text="テクニカル指標を計算中...")
+
+        def _get_closes(ticker):
+            if raw is None:
+                return pd.Series(dtype=float)
             try:
-                t = yf.Ticker(c["ticker"])
-                h1y = t.history(period="1y", interval="1d")
-                if h1y is None or h1y.empty:
-                    results.append({**c, "perf_6m": None, "perf_3m": None,
-                                    "perf_1m": None, "price": None,
-                                    "rsi": None, "sma50": None, "sma200": None,
-                                    "entry_rank": 3, "history": None})
-                    continue
+                if len(tickers) == 1:
+                    return raw["Close"].dropna()
+                # MultiIndex: (ticker, metric)
+                if ticker in raw.columns.get_level_values(0):
+                    return raw[ticker]["Close"].dropna()
+            except Exception:
+                pass
+            return pd.Series(dtype=float)
 
-                closes = h1y["Close"].dropna()
-                price  = closes.iloc[-1]
+        def _perf(closes, n):
+            return (closes.iloc[-1] / closes.iloc[-n] - 1) if len(closes) > n else None
 
-                def _perf(n_days):
-                    if len(closes) > n_days:
-                        return closes.iloc[-1] / closes.iloc[-n_days] - 1
-                    return None
+        results = []
+        for c in SMT_CONSTITUENTS:
+            closes = _get_closes(c["ticker"])
+            if closes.empty:
+                results.append({**c, "perf_6m": None, "perf_3m": None,
+                                "perf_1m": None, "price": None,
+                                "rsi": None, "sma50": None, "sma200": None,
+                                "entry_rank": 3, "history": None})
+                continue
+            try:
+                price  = float(closes.iloc[-1])
+                p6     = _perf(closes, 126)
+                p3     = _perf(closes, 63)
+                p1     = _perf(closes, 21)
 
-                perf_6m = _perf(126)
-                perf_3m = _perf(63)
-                perf_1m = _perf(21)
+                delta  = closes.diff()
+                gain   = delta.clip(lower=0).rolling(14).mean()
+                loss   = (-delta.clip(upper=0)).rolling(14).mean()
+                rsi    = float((100 - 100 / (1 + gain / loss.replace(0, np.nan))).iloc[-1])
+                sma50  = float(closes.rolling(50).mean().iloc[-1])
+                sma200 = float(closes.rolling(200).mean().iloc[-1]) if len(closes) >= 200 else None
 
-                # RSI
-                delta = closes.diff()
-                gain  = delta.clip(lower=0).rolling(14).mean()
-                loss  = (-delta.clip(upper=0)).rolling(14).mean()
-                rs    = gain / loss.replace(0, np.nan)
-                rsi   = (100 - 100 / (1 + rs)).iloc[-1]
-
-                sma50  = closes.rolling(50).mean().iloc[-1]
-                sma200 = closes.rolling(200).mean().iloc[-1] if len(closes) >= 200 else None
-
-                # entry rank
                 above200 = sma200 and price > sma200
-                above50  = price > sma50
                 rsi_ok   = 40 <= rsi <= 70
-                mom_pos  = (perf_3m or 0) > 0
-                if above200 and above50 and rsi_ok and mom_pos:
+                if above200 and price > sma50 and rsi_ok and (p3 or 0) > 0:
                     er = 0
                 elif above200 and rsi_ok:
                     er = 1
@@ -1161,32 +1200,36 @@ with tab_smt:
                 else:
                     er = 3
 
-                results.append({
-                    **c,
-                    "perf_6m":   perf_6m,
-                    "perf_3m":   perf_3m,
-                    "perf_1m":   perf_1m,
-                    "price":     price,
-                    "rsi":       rsi,
-                    "sma50":     sma50,
-                    "sma200":    sma200,
-                    "entry_rank": er,
-                    "history":   closes,
-                })
+                results.append({**c, "perf_6m": p6, "perf_3m": p3, "perf_1m": p1,
+                                "price": price, "rsi": rsi, "sma50": sma50,
+                                "sma200": sma200, "entry_rank": er, "history": closes})
             except Exception:
                 results.append({**c, "perf_6m": None, "perf_3m": None,
                                 "perf_1m": None, "price": None,
                                 "rsi": None, "sma50": None, "sma200": None,
                                 "entry_rank": 3, "history": None})
-            time.sleep(0.25)
+
         prog.empty()
         return sorted(results, key=lambda x: x["perf_6m"] if x["perf_6m"] is not None else -99, reverse=True)
 
-    if refresh:
+    # session_state でデータ保持 — ボタンまたはサイドバーリフレッシュ時のみ再取得
+    smt_hdr_col, smt_btn_col = st.columns([5, 1])
+    with smt_btn_col:
+        smt_refresh = st.button("🔄 更新", key="smt_fetch", use_container_width=True)
+    with smt_hdr_col:
+        if "_smt_at" in st.session_state:
+            st.caption(f"最終取得: {st.session_state['_smt_at']}")
+
+    if smt_refresh or refresh:
+        st.session_state.pop("smt_data", None)
         load_smt_data.clear()
 
-    with st.spinner("SMT構成銘柄データ取得中..."):
-        smt_data = load_smt_data()
+    if "smt_data" not in st.session_state:
+        with st.spinner("SMT構成銘柄データ取得中... (約30秒)"):
+            st.session_state["smt_data"] = load_smt_data()
+            st.session_state["_smt_at"] = datetime.now().strftime("%m/%d %H:%M")
+
+    smt_data = st.session_state["smt_data"]
 
     # ── 上位6銘柄 ─────────────────────────────────────────────────────────────
     top6         = [d for d in smt_data if d["perf_6m"] is not None][:6]
@@ -1301,7 +1344,7 @@ with tab_smt:
       </style>
       <div class="top6-grid">{top6_html_cards}</div>
     </div>
-    """, height=340)
+    """, height=620, scrolling=False)
 
     # ── 6M パフォーマンス 横棒グラフ（全21銘柄） ──────────────────────────────
     st.markdown("---")
@@ -1470,49 +1513,48 @@ with tab_smt:
             pass
 
     st.markdown("---")
-    st.subheader("📁 保有ポートフォリオ — 購入記録 & 長期監視")
-    st.caption("SMT構成銘柄を実際に購入した株数・購入価格を記録して損益を長期追跡します")
+    st.subheader("📁 保有ポートフォリオ")
 
     portfolio = load_portfolio()
 
     # ── 銘柄追加フォーム ─────────────────────────────────────────────────────
-    with st.expander("➕ 保有銘柄を追加・編集", expanded=len(portfolio) == 0):
+    with st.form("pf_form", clear_on_submit=True):
+        st.markdown("**銘柄を追加**")
         smt_ticker_opts = [f"{c['ticker']} — {c['name']}" for c in SMT_CONSTITUENTS]
-        col_a, col_b, col_c, col_d, col_e = st.columns([2, 1.5, 1.5, 1.5, 1])
-        with col_a:
-            sel_ticker_str = st.selectbox("ティッカー", smt_ticker_opts, key="pf_ticker")
-            sel_ticker = sel_ticker_str.split(" — ")[0]
+        sel_ticker_str = st.selectbox("ティッカー", smt_ticker_opts, key="pf_ticker")
+
+        col_b, col_c = st.columns(2)
         with col_b:
             buy_price = st.number_input("購入価格 ($)", min_value=0.01, value=100.0,
-                                        step=0.01, format="%.2f", key="pf_price")
+                                        step=1.0, format="%.2f", key="pf_price")
         with col_c:
-            buy_shares = st.number_input("株数", min_value=0.01, value=1.0,
-                                         step=0.01, format="%.2f", key="pf_shares")
-        with col_d:
-            buy_date = st.date_input("購入日", value=date.today(), key="pf_date")
-        with col_e:
-            st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
-            add_btn = st.button("追加", use_container_width=True, key="pf_add")
+            buy_shares = st.number_input("株数", min_value=1, value=1,
+                                         step=1, format="%d", key="pf_shares")
+        buy_date = st.date_input("購入日", value=date.today(), key="pf_date")
+        add_btn = st.form_submit_button("➕ 追加", use_container_width=True)
 
-        if add_btn:
-            portfolio.append({
-                "ticker":     sel_ticker,
-                "name":       sel_ticker_str.split(" — ")[1],
-                "buy_price":  buy_price,
-                "shares":     buy_shares,
-                "buy_date":   str(buy_date),
-            })
-            save_portfolio(portfolio)
-            st.success(f"{sel_ticker} を追加しました")
-            st.rerun()
+    if add_btn:
+        sel_ticker = sel_ticker_str.split(" — ")[0]
+        portfolio.append({
+            "ticker":    sel_ticker,
+            "name":      sel_ticker_str.split(" — ")[1],
+            "buy_price": buy_price,
+            "shares":    int(buy_shares),
+            "buy_date":  str(buy_date),
+        })
+        save_portfolio(portfolio)
+        st.success(f"{sel_ticker} を追加しました")
+        st.rerun()
 
-        # 削除UI
-        if portfolio:
-            st.markdown("**削除**")
-            del_opts = [f"{i+1}. {p['ticker']} @ ${p['buy_price']:.2f} × {p['shares']} ({p['buy_date']})"
-                        for i, p in enumerate(portfolio)]
-            del_sel = st.selectbox("削除する行", del_opts, key="pf_del_sel")
-            if st.button("選択行を削除", key="pf_del_btn"):
+    # 削除UI
+    if portfolio:
+        with st.expander("🗑️ 保有銘柄を削除"):
+            del_opts = [
+                f"{p['ticker']}  ${p['buy_price']:.2f} × {int(p['shares'])}株  ({p['buy_date']})"
+                for p in portfolio
+            ]
+            del_sel = st.selectbox("削除する銘柄", del_opts, key="pf_del_sel")
+            if st.button("削除", key="pf_del_btn", type="secondary"):
                 idx = del_opts.index(del_sel)
                 portfolio.pop(idx)
                 save_portfolio(portfolio)
@@ -1522,7 +1564,7 @@ with tab_smt:
         st.info("「➕ 保有銘柄を追加・編集」から購入記録を入力してください。")
     else:
         # ── 現在値取得 ──────────────────────────────────────────────────────
-        @st.cache_data(ttl=60)
+        @st.cache_data(ttl=300)
         def get_current_prices(tickers: tuple) -> dict:
             prices = {}
             for tk in tickers:
@@ -1577,7 +1619,7 @@ with tab_smt:
                 "企業名":       p["name"],
                 "購入日":       p["buy_date"],
                 "購入価格":     f"${p['buy_price']:.2f}",
-                "株数":         p["shares"],
+                "株数":         int(p["shares"]),
                 "現在値":       f"${cur:.2f}" if cur else "N/A",
                 "取得コスト":   f"${cost:,.2f}",
                 "評価額":       f"${val:,.2f}" if val else "N/A",
